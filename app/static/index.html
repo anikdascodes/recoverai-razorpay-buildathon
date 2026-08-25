@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RecoverAI — Revenue Recovery Agent</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { background:#0e0b08; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .card { background:#171310; border:1px solid #2a221c; border-radius:14px; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .badge { font-size:11px; padding:2px 8px; border-radius:999px; font-weight:600; letter-spacing:.02em; }
+  .st-recovered { background:rgba(16,185,129,.15); color:#34d399; }
+  .st-awaiting_payment { background:rgba(245,158,11,.15); color:#fbbf24; }
+  .st-escalated { background:rgba(239,68,68,.15); color:#f87171; }
+  .st-diagnosing, .st-acting, .st-open { background:rgba(96,165,250,.15); color:#60a5fa; }
+  .st-written_off { background:rgba(120,113,108,.2); color:#a8a29e; }
+  ::-webkit-scrollbar { width:8px; height:8px; } ::-webkit-scrollbar-thumb { background:#3a2f27; border-radius:4px; }
+  .row:hover { background:#1f1813; cursor:pointer; }
+  .fade-in { animation: fi .25s ease; } @keyframes fi { from {opacity:0; transform:translateY(4px);} to {opacity:1;} }
+</style>
+</head>
+<body class="text-stone-200 min-h-screen">
+
+<header class="border-b border-[#2a221c] px-6 py-4 flex items-center justify-between sticky top-0 bg-[#0e0b08]/95 backdrop-blur z-10">
+  <div class="flex items-center gap-3">
+    <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-emerald-400 to-teal-600 flex items-center justify-center text-[#0e0b08] font-black text-lg">R</div>
+    <div>
+      <h1 class="font-bold text-lg leading-tight">RecoverAI <span class="text-stone-500 font-normal text-sm">· Track 03 · AI Revenue Recovery</span></h1>
+      <p class="text-xs text-stone-500">Razorpay AI Buildathon — live agent dashboard</p>
+    </div>
+  </div>
+  <div class="flex items-center gap-2 text-xs">
+    <span id="live-dot" class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+    <span class="text-stone-500">live · auto-refresh 5s</span>
+  </div>
+</header>
+
+<main class="max-w-7xl mx-auto px-6 py-6 space-y-6">
+
+  <section class="grid grid-cols-2 md:grid-cols-5 gap-4" id="kpi-cards"></section>
+
+  <section class="card p-5">
+    <h2 class="font-semibold mb-3 text-sm text-stone-400 uppercase tracking-wide">Recovery by failure cause</h2>
+    <div class="overflow-x-auto"><table class="w-full text-sm" id="cause-table"></table></div>
+  </section>
+
+  <section class="card p-5">
+    <h2 class="font-semibold mb-3 text-sm text-stone-400 uppercase tracking-wide">Human approval inbox <span id="inbox-count" class="badge st-escalated ml-1"></span></h2>
+    <div class="overflow-x-auto"><table class="w-full text-sm" id="inbox-table"></table></div>
+  </section>
+
+  <section class="grid lg:grid-cols-5 gap-6">
+    <div class="card p-5 lg:col-span-3">
+      <div class="flex items-center gap-2 mb-3">
+        <h2 class="font-semibold text-sm text-stone-400 uppercase tracking-wide">Case queue</h2>
+        <select id="state-filter" class="ml-auto bg-[#0e0b08] border border-[#2a221c] rounded-lg text-xs px-2 py-1.5 text-stone-300">
+          <option value="">all active</option>
+          <option value="recovered">recovered</option>
+          <option value="awaiting_payment">awaiting payment</option>
+          <option value="escalated">escalated</option>
+          <option value="written_off">written off</option>
+        </select>
+      </div>
+      <div class="overflow-x-auto max-h-[520px] overflow-y-auto"><table class="w-full text-sm" id="case-table"></table></div>
+    </div>
+
+    <div class="card p-5 lg:col-span-2 hidden fade-in" id="detail-panel">
+      <div class="flex items-start justify-between mb-3">
+        <h2 class="font-semibold text-sm text-stone-400 uppercase tracking-wide">Case #<span id="d-case-id"></span> replay</h2>
+        <button onclick="closeDetail()" class="text-stone-500 hover:text-stone-300 text-lg leading-none">&times;</button>
+      </div>
+      <div id="d-summary" class="mb-4"></div>
+      <h3 class="text-xs uppercase tracking-wide text-stone-500 mb-2">Agent decision trail</h3>
+      <div id="d-trail" class="space-y-2 max-h-[420px] overflow-y-auto pr-1"></div>
+    </div>
+  </section>
+</main>
+
+<footer class="text-center text-xs text-stone-600 py-6">Built for Razorpay AI Buildathon 2026 · test-mode data only · every action auditable</footer>
+
+<script>
+const fmt = n => '₹' + Number(n).toLocaleString('en-IN');
+const stateBadge = s => `<span class="badge st-${s}">${s.replace(/_/g,' ')}</span>`;
+const esc = t => String(t ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let selectedCase = null;
+
+async function jget(url) { const r = await fetch(url); return r.json(); }
+
+const nodeIcon = { triage:'🧭', diagnose:'🧠', policy_gate:'🛡️', planner:'✍️', executor:'⚡', verifier:'🔍', escalate:'👤', write_off:'📁', defer:'⏳' };
+
+async function refreshStats() {
+  const s = await jget('/stats');
+  const cards = [
+    ['At risk', fmt(s.money.at_risk_rupees), 'text-stone-100'],
+    ['Recovered', fmt(s.money.recovered_rupees), 'text-emerald-400'],
+    ['Recovery rate', s.money.recovery_rate_pct + '%', 'text-emerald-400'],
+    ['Cases', s.cases.total, 'text-stone-100'],
+    ['Active / escalated', `${s.cases.open_or_active} / ${s.cases.escalated}`, 'text-amber-400'],
+  ];
+  document.getElementById('kpi-cards').innerHTML = cards.map(([l,v,c]) =>
+    `<div class="card p-4"><div class="text-xs text-stone-500 uppercase tracking-wide">${l}</div>
+     <div class="text-2xl font-bold mt-1 ${c} mono">${v}</div></div>`).join('');
+
+  const rows = s.by_cause.map(r => {
+    const maxRate = Math.max(...s.by_cause.map(x => x.rate_pct), 1);
+    return `<tr class="border-t border-[#2a221c]">
+      <td class="py-2 pr-2 text-stone-300">${r.cause.replace(/_/g,' ')}</td>
+      <td class="py-2 px-2 mono text-stone-400">${r.cases}</td>
+      <td class="py-2 px-2 mono">${fmt(Math.round(r.at_risk_paise/100))}</td>
+      <td class="py-2 px-2 mono text-emerald-400">${fmt(Math.round(r.recovered_paise/100))}</td>
+      <td class="py-2 px-2 w-1/3"><div class="flex items-center gap-2">
+        <div class="flex-1 h-2 bg-[#0e0b08] rounded-full overflow-hidden">
+          <div class="h-full bg-gradient-to-r from-emerald-500 to-teal-400" style="width:${(r.rate_pct/maxRate*100).toFixed(1)}%"></div>
+        </div>
+        <span class="mono text-xs text-emerald-300 w-12 text-right">${r.rate_pct}%</span>
+      </div></td></tr>`;
+  }).join('');
+  document.getElementById('cause-table').innerHTML =
+    `<thead><tr class="text-xs uppercase tracking-wide text-stone-500">
+      <th class="text-left py-1 pr-2">Cause</th><th class="text-left px-2">Cases</th>
+      <th class="text-left px-2">At risk</th><th class="text-left px-2">Recovered</th>
+      <th class="text-left px-2 w-1/3">Recovery rate</th></tr></thead><tbody>${rows}</tbody>`;
+}
+
+async function refreshInbox() {
+  const d = await jget('/api/approvals');
+  document.getElementById('inbox-count').textContent = d.count;
+  if (!d.count) {
+    document.getElementById('inbox-table').innerHTML = '<tr><td class="py-3 text-stone-600 text-sm">inbox empty — no cases waiting for human review</td></tr>';
+    return;
+  }
+  const rows = d.approvals.map(a => `<tr class="border-t border-[#2a221c]">
+    <td class="py-2 pr-2 mono">#${a.id}</td>
+    <td class="py-2 px-2">${esc(a.customer)}${a.opt_out ? ' <span class="badge st-written_off">opted out</span>' : ''}</td>
+    <td class="py-2 px-2 mono">${fmt(a.amount_rs)}</td>
+    <td class="py-2 px-2 text-stone-400">${a.cause.replace(/_/g,' ')}</td>
+    <td class="py-2 px-2 mono text-stone-400">${a.attempts}</td>
+    <td class="py-2 px-2 text-right whitespace-nowrap">
+      <button onclick="decide(${a.id},true)" class="bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 border border-emerald-500/30 rounded-lg px-3 py-1 text-xs font-semibold mr-1">approve & run</button>
+      <button onclick="decide(${a.id},false)" class="bg-[#2a221c] text-stone-400 hover:text-stone-200 border border-[#3a2f27] rounded-lg px-3 py-1 text-xs font-semibold">write off</button>
+    </td></tr>`).join('');
+  document.getElementById('inbox-table').innerHTML =
+    `<thead><tr class="text-xs uppercase tracking-wide text-stone-500">
+      <th class="text-left py-1 pr-2">Case</th><th class="text-left px-2">Customer</th>
+      <th class="text-left px-2">Amount</th><th class="text-left px-2">Cause</th>
+      <th class="text-left px-2">Tries</th><th></th></tr></thead><tbody>${rows}</tbody>`;
+}
+
+async function decide(id, approve) {
+  const r = await fetch(`/api/approvals/${id}/${approve ? 'approve' : 'reject'}`, { method: 'POST' });
+  const d = await r.json();
+  if (!r.ok) return alert(d.detail || 'error');
+  refreshAll();
+  if (selectedCase === id) openDetail(id);
+}
+
+async function refreshCases() {
+  const f = document.getElementById('state-filter').value;
+  const d = await jget('/api/cases' + (f ? `?state=${f}` : ''));
+  const head = `<thead><tr class="text-xs uppercase tracking-wide text-stone-500 sticky top-0 bg-[#171310]">
+    <th class="text-left py-1 pr-2">#</th><th class="text-left px-2">Customer</th>
+    <th class="text-left px-2">Amount</th><th class="text-left px-2">Cause</th>
+    <th class="text-left px-2">State</th><th class="text-left px-2">Tries</th></tr></thead>`;
+  const rows = d.cases.map(c => `<tr class="row border-t border-[#2a221c]" onclick="openDetail(${c.id})">
+    <td class="py-2 pr-2 mono text-stone-500">${c.id}</td>
+    <td class="py-2 px-2">${esc(c.customer.name)}<div class="text-xs text-stone-600 mono">${esc(c.customer.phone)}</div></td>
+    <td class="py-2 px-2 mono">${fmt(c.amount_rs)}</td>
+    <td class="py-2 px-2 text-stone-400 text-xs">${c.cause.replace(/_/g,' ')}</td>
+    <td class="py-2 px-2">${stateBadge(c.state)}</td>
+    <td class="py-2 px-2 mono text-stone-400">${c.attempts}</td></tr>`).join('');
+  document.getElementById('case-table').innerHTML = head + `<tbody>${rows || '<tr><td colspan=6 class="py-4 text-stone-600 text-sm">no cases</td></tr>'}</tbody>`;
+}
+
+function closeDetail(){ document.getElementById('detail-panel').classList.add('hidden'); selectedCase = null; }
+
+async function openDetail(id) {
+  selectedCase = id;
+  const d = await jget(`/api/cases/${id}/timeline`);
+  document.getElementById('detail-panel').classList.remove('hidden');
+  document.getElementById('d-case-id').textContent = id;
+  const c = d.case;
+  document.getElementById('d-summary').innerHTML = `
+    <div class="grid grid-cols-3 gap-2 text-center">
+      <div class="bg-[#0e0b08] rounded-xl p-2"><div class="text-[10px] text-stone-500 uppercase">amount</div><div class="mono font-bold">${fmt(c.amount_rs)}</div></div>
+      <div class="bg-[#0e0b08] rounded-xl p-2"><div class="text-[10px] text-stone-500 uppercase">state</div><div>${stateBadge(c.state)}</div></div>
+      <div class="bg-[#0e0b08] rounded-xl p-2"><div class="text-[10px] text-stone-500 uppercase">recovered</div><div class="mono font-bold ${c.recovered_rs>0?'text-emerald-400':''}">${fmt(c.recovered_rs)}</div></div>
+    </div>
+    <div class="mt-2 text-xs text-stone-500">failure: <span class="mono text-stone-400">${esc(c.failure_code||'—')}</span> · cause: ${c.cause.replace(/_/g,' ')}</div>`;
+  const trail = d.agent_events.map(e => `
+    <div class="bg-[#0e0b08] border border-[#2a221c] rounded-xl p-3">
+      <div class="flex items-center gap-2 text-xs">
+        <span>${nodeIcon[e.node]||'•'}</span>
+        <span class="font-semibold text-stone-300">${e.node}</span>
+        <span class="ml-auto text-stone-600 mono text-[10px]">${(e.ts||'').slice(11,19)}</span>
+      </div>
+      <div class="text-xs text-stone-400 mt-1">${renderDecision(e)}</div>
+    </div>`).join('');
+  document.getElementById('d-trail').innerHTML = trail || '<div class="text-sm text-stone-600">no agent events yet — click a case the agent has processed</div>';
+}
+
+function renderDecision(e) {
+  const parts = [];
+  if (e.decision) parts.push(`<span class="text-stone-200 mono">${esc(e.decision)}</span>`);
+  if (e.confidence != null) parts.push(`confidence ${(e.confidence*100).toFixed(0)}%`);
+  if (e.note) parts.push(esc(e.note));
+  if (e.allowed) parts.push('allowed: ' + e.allowed.map(esc).join(', '));
+  if (e.violations && e.violations.length) parts.push(`<span class="text-red-400">blocked: ${e.violations.map(esc).join('; ')}</span>`);
+  if (e.channel) parts.push(`via ${e.channel}`);
+  if (e.summary) parts.push(esc(e.summary));
+  if (e.tokens) parts.push(`${e.tokens} tok`);
+  if (e.result) parts.push(`<span class="mono text-[10px] text-stone-500">${esc(JSON.stringify(e.result)).slice(0,140)}</span>`);
+  return parts.join(' · ');
+}
+
+function refreshAll() { refreshStats(); refreshInbox(); refreshCases(); if (selectedCase) openDetail(selectedCase); }
+
+document.getElementById('state-filter').addEventListener('change', refreshCases);
+setInterval(refreshAll, 5000);
+refreshAll();
+
+</script>
+</body>
+</html>
