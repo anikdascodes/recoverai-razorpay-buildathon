@@ -7,6 +7,20 @@
 
 ---
 
+## 🔴 Live demo
+
+**https://8000-larlxrqpqo8sl61o.daytonaproxy01.net/dashboard**
+
+A live instance runs on a Daytona sandbox (test mode, synthetic data). What you can do there:
+
+- Read the KPIs and per-cause recovery bars — a fresh batch runs in the sandbox, so its numbers are live and will differ slightly from the table below
+- Open the **Human Approval inbox** and approve a ≥ ₹2,000 case — watch the gate unblock, the reminder fire, and the KPIs move
+- Click any case → **replay its full decision trail** from the audit log
+
+If the link is ever slow or asleep, the sandbox restarts in one command (`daytona sandbox start <id>`) and all state persists — nothing is lost. Everything in this README runs locally with the same one command shown in [Run it](#run-it).
+
+---
+
 ## The problem in one paragraph
 
 When a subscription payment fails — card expired, insufficient balance, revoked UPI mandate — the revenue doesn't come back on its own. Nobody emails the customer, nobody retries at the right moment, nobody notices the mandate broke. Collections teams chase these by hand: spreadsheets, cold calls, timing guesswork. It's slow, inconsistent, and easy to get wrong — message someone at midnight, or someone who opted out, and a revenue problem becomes a **compliance** problem. RecoverAI closes that loop: detect → diagnose → act → verify, with hard rails around every step.
