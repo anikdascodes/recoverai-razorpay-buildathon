@@ -1,5 +1,7 @@
 import argparse
 import random
+from datetime import datetime
+from pathlib import Path
 
 from sqlalchemy import func, select
 
@@ -11,6 +13,19 @@ FIRST_NAMES = [
     "Arjun", "Sneha", "Ishaan", "Kavya", "Rahul", "Pooja", "Dev", "Nisha",
 ]
 LAST_NAMES = ["Sharma", "Patel", "Reddy", "Iyer", "Gupta", "Singh", "Nair", "Das"]
+
+
+def _rotate_audit_if_fresh_db() -> None:
+    """A fresh batch means a fresh case-id space. The append-only audit log
+    from a previous DB generation would otherwise leak ghost events into the
+    new run's case replays, so archive it first."""
+    with SessionLocal() as db:
+        existing = db.scalar(select(func.count(Case.id))) or 0
+    audit_file = Path("audit.jsonl")
+    if existing == 0 and audit_file.exists() and audit_file.stat().st_size > 0:
+        archive = audit_file.with_name(f"audit_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl")
+        audit_file.rename(archive)
+        print(f"archived previous audit log -> {archive.name}")
 
 FAILURE_MIX = [
     (FailureCause.INSUFFICIENT_FUNDS, 0.30, "INSUFFICIENT_FUNDS", "Payment declined: insufficient funds"),
@@ -36,6 +51,7 @@ def _pick_failure() -> tuple[FailureCause, str, str]:
 
 def generate_batch(n_customers: int = 120) -> dict:
     init_db()
+    _rotate_audit_if_fresh_db()
     created_cases = 0
     total_at_risk = 0
 

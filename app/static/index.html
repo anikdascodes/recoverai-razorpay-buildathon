@@ -192,7 +192,7 @@ async function openDetail(id) {
       <div class="flex items-center gap-2 text-xs">
         <span>${nodeIcon[e.node]||'•'}</span>
         <span class="font-semibold text-stone-300">${e.node}</span>
-        <span class="ml-auto text-stone-600 mono text-[10px]">${(e.ts||'').slice(11,19)}</span>
+        <span class="ml-auto text-stone-600 mono text-[10px]">${fmtTs(e.ts)}</span>
       </div>
       <div class="text-xs text-stone-400 mt-1">${renderDecision(e)}</div>
     </div>`).join('');
@@ -209,8 +209,16 @@ function renderDecision(e) {
   if (e.channel) parts.push(`via ${e.channel}`);
   if (e.summary) parts.push(esc(e.summary));
   if (e.tokens) parts.push(`${e.tokens} tok`);
+  if (e.reason) parts.push(`<span class="text-amber-400">${esc(e.reason)}</span>`);
   if (e.result) parts.push(`<span class="mono text-[10px] text-stone-500">${esc(JSON.stringify(e.result)).slice(0,140)}</span>`);
   return parts.join(' · ');
+}
+
+function fmtTs(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  if (isNaN(d)) return ts;
+  return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
 function refreshAll() { refreshStats(); refreshInbox(); refreshCases(); if (selectedCase) openDetail(selectedCase); }

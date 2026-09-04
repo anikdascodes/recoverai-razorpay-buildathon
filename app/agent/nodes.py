@@ -1,5 +1,4 @@
 import json
-import random
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -8,9 +7,13 @@ from app.agent.audit import audit
 from app.agent.llm import LLMError, chat
 from app.agent.state import AgentState
 from app.channels.razorpay_client import RazorpayClient
+from app.channels.voice import build_script, place_call
+from app.channels.whatsapp import send_whatsapp
 from app.config import get_settings
 from app.models import Attempt, Case, CaseState, Customer, FailureCause, utcnow
 from app.normalizer import CAUSE_BY_ERROR
+from app.state_machine import transition
+from app.worldsim import reference_id_for, settle_action
 
 MAX_ATTEMPTS = 5
 HUMAN_APPROVAL_THRESHOLD_PAISE = 200_000
@@ -25,14 +28,7 @@ ACTION_MENU = {
     FailureCause.UNKNOWN: ["whatsapp_reminder", "voice_call"],
 }
 CUSTOMER_FACING = {"whatsapp_reminder", "payment_link_update_card", "voice_call", "pause_and_offer", "mandate_relink"}
-SUCCESS_PROBABILITY = {
-    "auto_retry": 0.85,
-    "whatsapp_reminder": 0.55,
-    "payment_link_update_card": 0.65,
-    "voice_call": 0.70,
-    "mandate_relink": 0.30,
-    "pause_and_offer": 0.35,
-}
+LINK_ACTIONS = {"whatsapp_reminder", "payment_link_update_card", "mandate_relink", "pause_and_offer"}
 
 
 def _load_case(db, case_id: int) -> tuple[Case, Customer]:
@@ -196,83 +192,100 @@ def executor(state: AgentState) -> dict:
     action = state["action"]
     result: dict = {"action": action}
     link_url = ""
-
-    if action in {"whatsapp_reminder", "payment_link_update_card", "mandate_relink", "pause_and_offer"}:
-        s = get_settings()
-        if s.has_live_keys:
-            try:
-                rc = RazorpayClient()
-                pl = rc.create_payment_link(
-                    amount=state["amount_paise"],
-                    customer={"name": state["customer"]["name"], "phone": state["customer"]["phone"],
-                              "email": ""},
-                    description=f"Recovery payment for case #{state['case_id']}",
-                    reference_id=f"recoverai_case_{state['case_id']}_r{state['round_no']}",
-                )
-                rc.close()
-                link_url = pl.get("short_url", "")
-                result["payment_link_id"] = pl.get("id")
-            except Exception as e:
-                result["link_error"] = str(e)[:120]
-        if not link_url:
-            link_url = f"https://rzp.io/i/synthetic-case{state['case_id']}r{state['round_no']}"
-
-    if action == "auto_retry":
-        if state["source"] == "synthetic":
-            paid = random.random() < SUCCESS_PROBABILITY[action]
-            result.update({"mode": "synthetic", "retry_succeeded": paid})
-        else:
-            try:
-                rc = RazorpayClient()
-                r = rc.retry_subscription_charge(state["subscription_id"], state["amount_paise"])
-                rc.close()
-                result.update({"mode": "live", **r})
-                paid = bool(r.get("resumed"))
-            except Exception as e:
-                result.update({"mode": "live", "error": str(e)[:120]})
-                paid = False
-    else:
-        result["delivered"] = True
-        result["link"] = link_url
-        if state["message"]:
-            result["message_preview"] = state["message"].replace("{link}", link_url)
+    round_no = state.get("round_no", 0)
 
     with SessionLocalSafe() as db:
-        case, customer = _load_case(db, state["case_id"])
+        case, _ = _load_case(db, state["case_id"])
+        case.state = transition(case.state, CaseState.ACTING)
+
+        if action in LINK_ACTIONS:
+            s = get_settings()
+            if s.has_live_keys:
+                try:
+                    rc = RazorpayClient()
+                    pl = rc.create_payment_link(
+                        amount=state["amount_paise"],
+                        customer={"name": state["customer"]["name"], "phone": state["customer"]["phone"],
+                                  "email": ""},
+                        description=f"Recovery payment for case #{state['case_id']}",
+                        reference_id=reference_id_for(state["case_id"], round_no),
+                    )
+                    rc.close()
+                    link_url = pl.get("short_url", "")
+                    result["payment_link_id"] = pl.get("id")
+                    result["mode"] = "live"
+                except Exception as e:
+                    result["link_error"] = str(e)[:120]
+            if not link_url:
+                link_url = f"https://rzp.io/i/synthetic-case{state['case_id']}r{round_no}"
+                result.setdefault("mode", "simulated")
+            result["link"] = link_url
+
+            if action == "voice_call":
+                script = state["message"] or build_script(
+                    state["customer"]["name"], state["amount_paise"] / 100,
+                    state["customer"].get("lang_pref", "en"), link_url,
+                )
+                result["voice"] = place_call(state["customer"]["phone"], script)
+                if state["message"]:
+                    result["script_preview"] = state["message"].replace("{link}", link_url)
+            else:
+                body = state["message"].replace("{link}", link_url) if state["message"] else \
+                    f"Your payment of Rs {state['amount_paise'] / 100:.0f} failed. Pay securely: {link_url}"
+                result["delivery"] = send_whatsapp(state["customer"]["phone"], body)
+                result["message_preview"] = body
+
+        elif action == "auto_retry":
+            if state["source"] == "synthetic":
+                result["mode"] = "simulated"
+            else:
+                try:
+                    rc = RazorpayClient()
+                    r = rc.retry_subscription_charge(state["subscription_id"], state["amount_paise"])
+                    rc.close()
+                    result.update({"mode": "live", **r})
+                except Exception as e:
+                    result.update({"mode": "live", "error": str(e)[:120]})
+
         db.add(Attempt(
             case_id=case.id, action_type=action, channel=state["channel"],
             payload={"message": state["message"], "link": link_url}, result=result,
         ))
         case.attempts_count += 1
-        case.state = CaseState.AWAITING_PAYMENT
+        case.state = transition(case.state, CaseState.AWAITING_PAYMENT)
         db.commit()
         result["attempts_now"] = case.attempts_count
+
+    # The world responds AFTER the action is on record. For synthetic cases
+    # the world simulator emits a signed money-moved event through the same
+    # ingest path as live traffic; live cases are confirmed by real webhooks.
+    if state["source"] == "synthetic":
+        with SessionLocalSafe() as db:
+            case, _ = _load_case(db, state["case_id"])
+            result["worldsim"] = settle_action(case, action, round_no)
 
     audit({"case_id": state["case_id"], "node": "executor", "decision": action, "result": result})
     return {"exec_result": result}
 
 
 def verifier(state: AgentState) -> dict:
-    result = state["exec_result"]
-    action = state["action"]
-
-    if action == "auto_retry":
-        recovered = bool(result.get("retry_succeeded") or result.get("resumed"))
-    else:
-        p = SUCCESS_PROBABILITY.get(action, 0.4)
-        recovered = random.random() < p
-
+    """Recovery is only ever confirmed by a money-moved event
+    (subscription.charged / payment_link.paid / payment.captured / invoice.paid)
+    flowing through the signed ingest path and matched to this case by the
+    normalizer. The verifier reads that outcome; it never decides it."""
     with SessionLocalSafe() as db:
         case, _ = _load_case(db, state["case_id"])
+        recovered = case.state == CaseState.RECOVERED
         if recovered:
-            transition_ok = case.state != CaseState.RECOVERED
-            case.state = CaseState.RECOVERED
-            case.recovered_amount = case.amount
-            case.closed_at = utcnow()
-        db.commit()
+            confirmed_at = case.closed_at.isoformat() if case.closed_at else None
+        else:
+            confirmed_at = None
 
-    audit({"case_id": state["case_id"], "node": "verifier", "decision": "recovered" if recovered else "not_yet"})
-    return {"recovered": recovered}
+    audit({
+        "case_id": state["case_id"], "node": "verifier",
+        "decision": "recovered_confirmed_by_event" if recovered else "not_yet",
+    })
+    return {"recovered": recovered, "confirmed_at": confirmed_at}
 
 
 def escalate(state: AgentState) -> dict:
@@ -296,7 +309,10 @@ def write_off(state: AgentState) -> dict:
         case.state = CaseState.WRITTEN_OFF
         case.closed_at = utcnow()
         db.commit()
-    audit({"case_id": state["case_id"], "node": "write_off", "decision": "terminal"})
+    audit({
+        "case_id": state["case_id"], "node": "write_off", "decision": "terminal",
+        "reason": "; ".join(state.get("violations", [])) or "stopping rules reached",
+    })
     return {"stop_reason": "written_off"}
 
 
@@ -315,8 +331,11 @@ def route_after_policy(state: AgentState) -> str:
         return "escalate"
     if not state.get("allowed_actions"):
         v = " ".join(state.get("violations", []))
+        # Opted-out / DND customers can never be contacted compliantly. No
+        # amount of human approval changes that — escalation would bounce the
+        # case back and forth forever. Write off and stop.
         if "opted out" in v or "DND" in v:
-            return "escalate"
+            return "write_off"
         if "max attempts" in v:
             return "write_off"
         return "defer"
@@ -327,7 +346,7 @@ def defer(state: AgentState) -> dict:
     with SessionLocalSafe() as db:
         case, _ = _load_case(db, state["case_id"])
         if case.state == CaseState.DIAGNOSING:
-            case.state = CaseState.AWAITING_PAYMENT
+            case.state = transition(case.state, CaseState.AWAITING_PAYMENT)
         db.commit()
     audit({"case_id": state["case_id"], "node": "defer", "decision": "wait_for_contact_window"})
     return {"stop_reason": "deferred_contact_window"}

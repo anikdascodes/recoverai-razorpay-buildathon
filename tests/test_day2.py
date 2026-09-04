@@ -1,32 +1,45 @@
-import os
-
-os.environ["DATABASE_URL"] = "sqlite:///./test_day2.db"
-
 from fastapi.testclient import TestClient
 
 from app.db import SessionLocal, init_db
 from app.generator.batch import generate_batch
 from app.main import app
-from app.models import Case, CaseState
+from app.models import Case, CaseState, Customer, FailureCause
 from app.state_machine import IllegalTransition, transition
 
 
-def run() -> None:
+def _fresh_case() -> Case:
     init_db()
-    generate_batch(50)
-
     with SessionLocal() as db:
-        case = db.query(Case).first()
+        cust = Customer(name="SM Test", phone="+919000000901", email="sm@example.com")
+        db.add(cust)
+        db.flush()
+        case = Case(
+            customer_id=cust.id,
+            subscription_id="sub_SM1",
+            amount=149_900,
+            source="synthetic",
+            source_ref="pay_SM1",
+            failure_code="INSUFFICIENT_FUNDS",
+            failure_reason="declined",
+            cause=FailureCause.INSUFFICIENT_FUNDS,
+            state=CaseState.OPEN,
+            priority=3,
+        )
+        db.add(case)
+        db.commit()
+        return case
 
-        transition(case.state, CaseState.DIAGNOSING)
-        case.state = CaseState.DIAGNOSING
-        transition(case.state, CaseState.ACTING)
-        case.state = CaseState.ACTING
-        transition(case.state, CaseState.AWAITING_PAYMENT)
-        case.state = CaseState.AWAITING_PAYMENT
-        transition(case.state, CaseState.RECOVERED)
-        case.state = CaseState.RECOVERED
-        case.recovered_amount = case.amount
+
+def test_legal_path_and_illegal_rejection():
+    case = _fresh_case()
+    with SessionLocal() as db:
+        c = db.get(Case, case.id)
+
+        c.state = transition(c.state, CaseState.DIAGNOSING)
+        c.state = transition(c.state, CaseState.ACTING)
+        c.state = transition(c.state, CaseState.AWAITING_PAYMENT)
+        c.state = transition(c.state, CaseState.RECOVERED)
+        c.recovered_amount = c.amount
         db.commit()
 
         try:
@@ -35,6 +48,16 @@ def run() -> None:
         except IllegalTransition:
             pass
 
+        # written-off cases can only exit via the reconciler, never directly
+        try:
+            transition(CaseState.WRITTEN_OFF, CaseState.ACTING)
+            raise AssertionError("should have raised")
+        except IllegalTransition:
+            pass
+
+
+def test_stats_endpoint():
+    init_db()
     client = TestClient(app)
     r = client.get("/stats")
     assert r.status_code == 200
@@ -42,13 +65,10 @@ def run() -> None:
     assert data["cases"]["total"] > 0
     assert data["money"]["at_risk_paise"] > 0
 
-    print("STATE MACHINE: legal path ok, illegal RECOVERED->ACTING rejected")
-    print("STATS:", {
-        "cases": data["cases"],
-        "recovery_rate_pct": data["money"]["recovery_rate_pct"],
-        "at_risk_rs": data["money"]["at_risk_rupees"],
-    })
 
-
-if __name__ == "__main__":
-    run()
+def test_generate_batch_seeds_cases():
+    init_db()
+    stats = generate_batch(5)
+    assert stats["cases"] > 0
+    with SessionLocal() as db:
+        assert db.query(Case).filter(Case.source == "synthetic").count() >= stats["cases"]

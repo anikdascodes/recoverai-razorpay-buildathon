@@ -2,7 +2,9 @@ from app.models import CaseState
 
 ALLOWED_TRANSITIONS: dict[CaseState, set[CaseState]] = {
     CaseState.OPEN: {CaseState.DIAGNOSING, CaseState.ESCALATED, CaseState.WRITTEN_OFF},
-    CaseState.DIAGNOSING: {CaseState.ACTING, CaseState.ESCALATED},
+    # DIAGNOSING -> AWAITING_PAYMENT: policy gate deferred the case (e.g.
+    # outside contact window); it waits for the next batch run.
+    CaseState.DIAGNOSING: {CaseState.ACTING, CaseState.AWAITING_PAYMENT, CaseState.ESCALATED},
     CaseState.ACTING: {CaseState.AWAITING_PAYMENT, CaseState.DIAGNOSING, CaseState.ESCALATED, CaseState.WRITTEN_OFF},
     CaseState.AWAITING_PAYMENT: {
         CaseState.RECOVERED,
@@ -11,8 +13,12 @@ ALLOWED_TRANSITIONS: dict[CaseState, set[CaseState]] = {
         CaseState.WRITTEN_OFF,
     },
     CaseState.RECOVERED: set(),
-    CaseState.ESCALATED: {CaseState.ACTING, CaseState.WRITTEN_OFF},
-    CaseState.WRITTEN_OFF: set(),
+    # ESCALATED -> DIAGNOSING happens when a human approves and the agent
+    # re-runs with the amount gate unlocked.
+    CaseState.ESCALATED: {CaseState.DIAGNOSING, CaseState.ACTING, CaseState.AWAITING_PAYMENT, CaseState.WRITTEN_OFF},
+    # WRITTEN_OFF is terminal for agent actions. The only exit is a genuine
+    # late authorization event handled by the reconciler in normalizer.py.
+    CaseState.WRITTEN_OFF: {CaseState.RECOVERED},
 }
 
 TERMINAL_STATES = {CaseState.RECOVERED, CaseState.WRITTEN_OFF}

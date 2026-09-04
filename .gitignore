@@ -5,3 +5,4 @@ __pycache__/
 *.db
 audit.jsonl
 .pytest_cache/
+audit_*.jsonl

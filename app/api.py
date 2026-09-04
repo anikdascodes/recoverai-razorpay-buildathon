@@ -7,7 +7,7 @@ from sqlalchemy import select
 from app.agent.graph import build_graph, run_case
 from app.db import SessionLocal
 from app.models import Attempt, Case, CaseState, Customer, utcnow
-from app.state_machine import transition, IllegalTransition
+from app.state_machine import transition
 
 router = APIRouter(prefix="/api")
 
@@ -16,6 +16,7 @@ AUDIT_FILE = Path("audit.jsonl")
 
 @router.get("/cases")
 def list_cases(state: str | None = None, limit: int = 100) -> dict:
+    limit = max(1, min(limit, 500))
     with SessionLocal() as db:
         q = (
             select(Case, Customer)
@@ -24,7 +25,11 @@ def list_cases(state: str | None = None, limit: int = 100) -> dict:
             .limit(limit)
         )
         if state:
-            q = q.where(Case.state == CaseState(state))
+            try:
+                state_enum = CaseState(state)
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"unknown state: {state}. Valid: {[s.value for s in CaseState]}")
+            q = q.where(Case.state == state_enum)
         else:
             q = q.where(~Case.state.in_([CaseState.RECOVERED]))
         rows = db.execute(q).all()
@@ -120,11 +125,7 @@ def approve_case(case_id: int) -> dict:
             raise HTTPException(status_code=404, detail="case not found")
         if case.state != CaseState.ESCALATED:
             raise HTTPException(status_code=400, detail=f"case is {case.state.value}, not escalated")
-        try:
-            transition(case.state, CaseState.ACTING)
-        except IllegalTransition:
-            pass
-        case.state = CaseState.DIAGNOSING
+        case.state = transition(case.state, CaseState.DIAGNOSING)
         db.commit()
     graph = build_graph()
     out = run_case(graph, case_id, round_no=case.attempts_count, human_approved=True)

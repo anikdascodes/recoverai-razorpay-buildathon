@@ -7,8 +7,6 @@ from app.config import get_settings
 from app.db import SessionLocal, init_db
 from app.main import app
 from app.models import Case, RawEvent
-
-
 def sign(body: bytes) -> tuple[str, str]:
     secret = get_settings().rzp_webhook_secret
     sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()

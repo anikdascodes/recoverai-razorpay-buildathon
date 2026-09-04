@@ -60,6 +60,11 @@ class RazorpayClient:
         r.raise_for_status()
         return {"resumed": True, **r.json()}
 
+    def fetch_payment_link(self, link_id: str) -> dict:
+        r = self._client.get(f"/payment_links/{link_id}")
+        r.raise_for_status()
+        return r.json()
+
     def close(self) -> None:
         self._client.close()
 
