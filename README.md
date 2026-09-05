@@ -9,7 +9,7 @@
 
 ## 🔴 Live demo
 
-**https://8000-larlxrqpqo8sl61o.daytonaproxy01.net/dashboard**
+**https://8000-udfxeniywbrtz4om.daytonaproxy01.net/dashboard**
 
 A live instance runs on a Daytona sandbox (test mode, synthetic data). What you can do there:
 
