@@ -1,4 +1,5 @@
 import argparse
+import os
 import random
 from datetime import datetime
 from pathlib import Path
@@ -7,6 +8,8 @@ from sqlalchemy import func, select
 
 from app.db import SessionLocal, init_db
 from app.models import Case, CaseState, Customer, FailureCause, utcnow
+
+AUDIT_FILE = Path(os.getenv("AUDIT_FILE", "audit.jsonl"))
 
 FIRST_NAMES = [
     "Aarav", "Diya", "Rohan", "Priya", "Kabir", "Ananya", "Vikram", "Meera",
@@ -21,7 +24,7 @@ def _rotate_audit_if_fresh_db() -> None:
     new run's case replays, so archive it first."""
     with SessionLocal() as db:
         existing = db.scalar(select(func.count(Case.id))) or 0
-    audit_file = Path("audit.jsonl")
+    audit_file = AUDIT_FILE
     if existing == 0 and audit_file.exists() and audit_file.stat().st_size > 0:
         archive = audit_file.with_name(f"audit_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl")
         audit_file.rename(archive)

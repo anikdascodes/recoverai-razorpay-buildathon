@@ -1,5 +1,4 @@
-import json
-from pathlib import Path
+from app.agent.audit import AUDIT_FILE
 
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
@@ -11,7 +10,6 @@ from app.state_machine import transition
 
 router = APIRouter(prefix="/api")
 
-AUDIT_FILE = Path("audit.jsonl")
 
 
 @router.get("/cases")

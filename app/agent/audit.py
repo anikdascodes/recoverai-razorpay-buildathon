@@ -1,8 +1,9 @@
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-AUDIT_FILE = Path("audit.jsonl")
+AUDIT_FILE = Path(os.getenv("AUDIT_FILE", "audit.jsonl"))
 
 
 def audit(record: dict) -> None:

@@ -11,6 +11,8 @@ Scenario (the track's "one failure handled gracefully"):
 Run:  python -m app.demo.late_authorization
 """
 
+import os
+
 from sqlalchemy import select
 
 from app.agent.audit import audit
@@ -52,9 +54,8 @@ def main() -> None:
         assert fresh.state == CaseState.RECOVERED
 
     print("\naudit trail for this case:")
-    from pathlib import Path
-
-    for line in Path("audit.jsonl").read_text(encoding="utf-8").splitlines():
+    
+    for line in Path(os.getenv("AUDIT_FILE", "audit.jsonl")).read_text(encoding="utf-8").splitlines():
         rec = __import__("json").loads(line)
         if rec.get("case_id") == case.id:
             print(f"  {rec['ts'][:19]}  {rec['node']:<12} {rec.get('decision', '')}")

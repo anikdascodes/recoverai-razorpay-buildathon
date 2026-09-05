@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+*.db
+audit*.jsonl
+.env
+.pytest_cache/
+dogfood-output/
+recoverai-demo/
+thumbnails/
+tests/
+.git/
