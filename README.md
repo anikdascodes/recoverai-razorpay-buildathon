@@ -9,7 +9,7 @@
 
 ## 🔴 Live demo
 
-**https://8000-udfxeniywbrtz4om.daytonaproxy01.net/dashboard**
+**https://recoverai-app-production.up.railway.app/dashboard**
 
 A live instance runs on a Daytona sandbox (test mode, synthetic data). What you can do there:
 
